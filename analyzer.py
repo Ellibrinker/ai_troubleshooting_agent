@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from typing import Any
@@ -19,11 +20,15 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
         r"(KeyError|ValueError|TypeError|AttributeError|TimeoutError|ConnectionError|PermissionError|IndexError|AuthenticationError|AuthorizationError)",
         log_text,
     )
+    method_match = re.search(r"\b(GET|POST|PUT|DELETE|PATCH)\b", log_text)
+    file_match = re.search(r"([A-Za-z0-9_\-]+\.py)", log_text)
 
     return {
         "status_codes": list(dict.fromkeys(status_codes)),
         "endpoints": list(dict.fromkeys(endpoints))[:5],
         "exception_type": exception_match.group(1) if exception_match else None,
+        "http_method": method_match.group(1) if method_match else None,
+        "file_name": file_match.group(1) if file_match else None,
         "contains_timeout": "timeout" in text or "timed out" in text,
         "contains_auth": any(
             token in text
@@ -34,6 +39,8 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
                 "oauth",
                 "authentication",
                 "authorization",
+                "scope",
+                "permission",
             ]
         ),
         "contains_db": any(
@@ -46,6 +53,7 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
                 "constraint",
                 "foreign key",
                 "duplicate key",
+                "unique violation",
             ]
         ),
         "contains_null_or_missing": any(
@@ -59,10 +67,38 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
                 "undefined",
             ]
         ),
+        "contains_traceback": "traceback" in text,
     }
 
 
-def _heuristic_analysis(log_text: str) -> dict[str, Any]:
+def _infer_category_and_severity(signals: dict[str, Any]) -> tuple[str, str]:
+    if "500" in signals["status_codes"]:
+        return "server", "high"
+
+    if "401" in signals["status_codes"] or "403" in signals["status_codes"] or signals["contains_auth"]:
+        return "authentication", "medium"
+
+    if "404" in signals["status_codes"]:
+        return "routing", "medium"
+
+    if signals["contains_db"]:
+        return "database", "high"
+
+    if signals["contains_timeout"]:
+        return "timeout", "medium"
+
+    if signals["contains_null_or_missing"] or signals["exception_type"]:
+        return "validation", "medium"
+
+    return "general", "low"
+
+
+def _heuristic_analysis(
+    log_text: str,
+    source: str = "unknown",
+    environment: str = "unknown",
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     signals = _extract_signals(log_text)
     probable_causes: list[str] = []
     debugging_steps: list[str] = []
@@ -81,10 +117,10 @@ def _heuristic_analysis(log_text: str) -> dict[str, Any]:
         or signals["contains_auth"]
     ):
         probable_causes.append(
-            "Authentication or authorization failure, possibly due to invalid token or insufficient scope."
+            "Authentication or authorization failure, possibly due to an invalid token, expired credentials, or insufficient scope."
         )
         debugging_steps.append(
-            "Validate token, permissions, and request headers. Check auth middleware or connector scopes."
+            "Validate tokens, permissions, request headers, and any auth middleware or connector scopes."
         )
 
     if "404" in signals["status_codes"]:
@@ -92,36 +128,36 @@ def _heuristic_analysis(log_text: str) -> dict[str, Any]:
             "Invalid route, missing resource, or incorrect identifier passed to the request."
         )
         debugging_steps.append(
-            "Verify endpoint path, resource ID, and whether the entity exists in the expected environment."
+            "Verify the endpoint path, resource ID, and whether the requested entity exists in the expected environment."
         )
 
     if signals["contains_timeout"]:
         probable_causes.append(
-            "Upstream dependency, slow query, or network-related timeout."
+            "Upstream dependency, slow database query, or network-related timeout."
         )
         debugging_steps.append(
-            "Check external service latency, DB query time, and retry/timeout configuration."
+            "Check external service latency, database query performance, and timeout or retry configuration."
         )
 
     if signals["contains_db"]:
         probable_causes.append(
-            "Database constraint, schema mismatch, or invalid data flow."
+            "Database constraint violation, schema mismatch, or invalid data flow."
         )
         debugging_steps.append(
-            "Review recent inserts/updates, validate schema assumptions, and inspect SQL/database errors."
+            "Review recent inserts or updates, validate schema assumptions, and inspect the exact database error."
         )
 
     if signals["contains_null_or_missing"]:
         probable_causes.append(
-            "Missing or malformed input data leading to null/undefined access."
+            "Missing or malformed input data leading to null, undefined, or missing-key access."
         )
         debugging_steps.append(
-            "Validate request payload fields and add guards for missing values before access."
+            "Validate request payload fields and add guards before accessing optional or missing values."
         )
 
     if signals["exception_type"]:
         probable_causes.append(
-            f"Application raised {signals['exception_type']}, indicating a code-path or data handling issue."
+            f"Application raised {signals['exception_type']}, indicating a code-path or data-handling issue."
         )
         debugging_steps.append(
             f"Search for the exact {signals['exception_type']} location in code and inspect the triggering input."
@@ -129,33 +165,48 @@ def _heuristic_analysis(log_text: str) -> dict[str, Any]:
 
     if not probable_causes:
         probable_causes.append(
-            "Insufficient signal for a precise diagnosis; issue may depend on request context or environment configuration."
+            "Insufficient signal for a precise diagnosis; the issue may depend on request context or environment-specific configuration."
         )
         debugging_steps.extend(
             [
                 "Collect the full request payload, response status, and timestamp.",
-                "Compare failing flow against a known successful request.",
-                "Check recent configuration or deployment changes.",
+                "Compare the failing flow against a known successful request.",
+                "Review recent deployment or configuration changes.",
             ]
         )
 
+    category, severity = _infer_category_and_severity(signals)
+
     summary = (
-        "Likely issue involves backend handling, request validation, or "
-        "environment-specific behavior."
+        "Likely issue involves backend request handling, validation, dependency behavior, "
+        "or environment-specific configuration."
     )
 
     return {
         "mode": "heuristic",
         "summary": summary,
+        "category": category,
+        "severity": severity,
+        "source": source,
+        "environment": environment,
+        "timestamp": timestamp,
         "signals": signals,
         "probable_causes": probable_causes[:4],
         "debugging_steps": debugging_steps[:5],
     }
 
 
-def _openai_analysis(log_text: str) -> dict[str, Any]:
+def _openai_analysis(
+    log_text: str,
+    source: str = "unknown",
+    environment: str = "unknown",
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     if not OPENAI_API_KEY:
-        return _heuristic_analysis(log_text)
+        fallback = _heuristic_analysis(log_text, source, environment, timestamp)
+        fallback["mode"] = "heuristic_fallback"
+        fallback["fallback_reason"] = "OPENAI_API_KEY is missing"
+        return fallback
 
     try:
         from openai import OpenAI
@@ -164,12 +215,17 @@ def _openai_analysis(log_text: str) -> dict[str, Any]:
 
         prompt = f"""
 You are a technical troubleshooting assistant for web applications.
-Analyze the following log or error text and return:
-1. A short summary
-2. Up to 4 probable root causes
-3. Up to 5 debugging steps
 
-Error/Log:
+Analyze the following log and return valid JSON only with this exact structure:
+{{
+  "summary": "short summary",
+  "probable_causes": ["cause 1", "cause 2"],
+  "debugging_steps": ["step 1", "step 2"],
+  "category": "authentication | database | server | timeout | routing | validation | general",
+  "severity": "low | medium | high"
+}}
+
+Log:
 {log_text}
 """
 
@@ -178,23 +234,36 @@ Error/Log:
             input=prompt,
         )
 
-        text = response.output_text.strip()
+        raw_text = response.output_text.strip()
+        parsed = json.loads(raw_text)
 
         return {
             "mode": "openai",
-            "summary": text,
+            "summary": parsed.get("summary", "Analysis generated successfully."),
+            "category": parsed.get("category", "general"),
+            "severity": parsed.get("severity", "medium"),
+            "source": source,
+            "environment": environment,
+            "timestamp": timestamp,
             "signals": _extract_signals(log_text),
-            "probable_causes": [],
-            "debugging_steps": [],
+            "probable_causes": parsed.get("probable_causes", [])[:4],
+            "debugging_steps": parsed.get("debugging_steps", [])[:5],
         }
+
     except Exception as exc:
-        fallback = _heuristic_analysis(log_text)
+        fallback = _heuristic_analysis(log_text, source, environment, timestamp)
         fallback["mode"] = "heuristic_fallback"
         fallback["fallback_reason"] = str(exc)
         return fallback
 
 
-def analyze_log(log_text: str) -> dict[str, Any]:
+def analyze_log(
+    log_text: str,
+    source: str = "unknown",
+    environment: str = "unknown",
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     if USE_OPENAI:
-        return _openai_analysis(log_text)
-    return _heuristic_analysis(log_text)
+        return _openai_analysis(log_text, source, environment, timestamp)
+
+    return _heuristic_analysis(log_text, source, environment, timestamp)

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Troubleshooting Agent</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <main class="container">
+        <h1>AI Troubleshooting Agent</h1>
+        <p class="subtitle">
+            Paste a backend log or error message and get structured troubleshooting insights.
+        </p>
+
+        <section class="card">
+            <label for="logInput">Log input</label>
+            <textarea
+                id="logInput"
+                placeholder="Example: POST /api/orders returned 500. KeyError user_id in order_service.py"
+            ></textarea>
+
+            <div class="meta-grid">
+                <div>
+                    <label for="sourceInput">Source</label>
+                    <input id="sourceInput" type="text" placeholder="orders-service">
+                </div>
+
+                <div>
+                    <label for="environmentInput">Environment</label>
+                    <input id="environmentInput" type="text" placeholder="production">
+                </div>
+            </div>
+
+            <button id="analyzeBtn" onclick="analyzeLog()">Analyze</button>
+
+            <div class="demo-section">
+                <strong>Demo Logs</strong>
+                <div class="demo-buttons">
+                    <button type="button" onclick="loadExample('error500')">500 Server Error</button>
+                    <button type="button" onclick="loadExample('auth401')">401 Unauthorized</button>
+                    <button type="button" onclick="loadExample('dbError')">Database Error</button>
+                </div>
+            </div>
+
+            <p class="hint">
+                Available endpoints: <code>GET /health</code>,
+                <code>POST /analyze</code>,
+                <code>POST /analyze/batch</code>
+            </p>
+        </section>
+
+        <section class="card">
+            <h2>Analysis Result</h2>
+            <div id="result" class="result-box">No analysis yet.</div>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
