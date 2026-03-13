@@ -20,6 +20,24 @@ function loadExample(type) {
         sourceInput.value = "users-service";
         environmentInput.value = "production";
     }
+
+    if (type === "bruteforce") {
+        input.value = "Failed login attempt for user admin from IP 185.23.44.12. Authentication failed. Too many login attempts detected.";
+        sourceInput.value = "auth-service";
+        environmentInput.value = "production";
+    }
+
+    if (type === "sqlInjection") {
+        input.value = "GET /login?username=admin' OR 1=1-- returned 500 SQL syntax error in auth_handler.py";
+        sourceInput.value = "web-gateway";
+        environmentInput.value = "production";
+    }
+
+    if (type === "privilegeEscalation") {
+        input.value = "User root login from unknown IP 91.204.11.77. Sudo access granted. Possible privilege escalation activity.";
+        sourceInput.value = "ssh-audit";
+        environmentInput.value = "production";
+    }
 }
 
 async function analyzeLog() {

@@ -23,6 +23,42 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
     method_match = re.search(r"\b(GET|POST|PUT|DELETE|PATCH)\b", log_text)
     file_match = re.search(r"([A-Za-z0-9_\-]+\.py)", log_text)
 
+    contains_bruteforce = any(
+        token in text
+        for token in [
+            "failed login",
+            "multiple failed login",
+            "authentication failed",
+            "invalid password",
+            "too many login attempts",
+            "login failed",
+        ]
+    )
+
+    contains_sql_injection = any(
+        token in text
+        for token in [
+            "or 1=1",
+            "' or '1'='1",
+            "'--",
+            "union select",
+            "sql syntax error",
+            "drop table",
+        ]
+    )
+
+    contains_privilege_escalation = any(
+        token in text
+        for token in [
+            "sudo",
+            "root login",
+            "privilege escalation",
+            "admin access granted",
+            "elevated privileges",
+            "unauthorized admin access",
+        ]
+    )
+
     return {
         "status_codes": list(dict.fromkeys(status_codes)),
         "endpoints": list(dict.fromkeys(endpoints))[:5],
@@ -68,14 +104,30 @@ def _extract_signals(log_text: str) -> dict[str, Any]:
             ]
         ),
         "contains_traceback": "traceback" in text,
+        "contains_bruteforce": contains_bruteforce,
+        "contains_sql_injection": contains_sql_injection,
+        "contains_privilege_escalation": contains_privilege_escalation,
     }
 
 
 def _infer_category_and_severity(signals: dict[str, Any]) -> tuple[str, str]:
+    if signals["contains_sql_injection"]:
+        return "security", "high"
+
+    if signals["contains_privilege_escalation"]:
+        return "security", "high"
+
+    if signals["contains_bruteforce"]:
+        return "security", "high"
+
     if "500" in signals["status_codes"]:
         return "server", "high"
 
-    if "401" in signals["status_codes"] or "403" in signals["status_codes"] or signals["contains_auth"]:
+    if (
+        "401" in signals["status_codes"]
+        or "403" in signals["status_codes"]
+        or signals["contains_auth"]
+    ):
         return "authentication", "medium"
 
     if "404" in signals["status_codes"]:
@@ -102,6 +154,30 @@ def _heuristic_analysis(
     signals = _extract_signals(log_text)
     probable_causes: list[str] = []
     debugging_steps: list[str] = []
+
+    if signals["contains_bruteforce"]:
+        probable_causes.append(
+            "Multiple failed authentication attempts detected, possibly indicating a brute force attack."
+        )
+        debugging_steps.append(
+            "Check authentication logs, identify suspicious IP addresses, and enforce rate limiting or temporary account lockouts."
+        )
+
+    if signals["contains_sql_injection"]:
+        probable_causes.append(
+            "Possible SQL injection attempt detected in request input or query parameters."
+        )
+        debugging_steps.append(
+            "Review request parameters and ensure proper input sanitization and parameterized queries are used."
+        )
+
+    if signals["contains_privilege_escalation"]:
+        probable_causes.append(
+            "Suspicious privileged access or a possible privilege escalation attempt was detected."
+        )
+        debugging_steps.append(
+            "Audit user permissions, review admin actions, and verify whether the privileged operation was authorized."
+        )
 
     if "500" in signals["status_codes"]:
         probable_causes.append(
@@ -179,7 +255,7 @@ def _heuristic_analysis(
 
     summary = (
         "Likely issue involves backend request handling, validation, dependency behavior, "
-        "or environment-specific configuration."
+        "environment-specific configuration, or a potential security-related event."
     )
 
     return {
@@ -214,16 +290,19 @@ def _openai_analysis(
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         prompt = f"""
-You are a technical troubleshooting assistant for web applications.
+You are a technical troubleshooting assistant for web applications and security-related logs.
 
 Analyze the following log and return valid JSON only with this exact structure:
 {{
   "summary": "short summary",
   "probable_causes": ["cause 1", "cause 2"],
   "debugging_steps": ["step 1", "step 2"],
-  "category": "authentication | database | server | timeout | routing | validation | general",
+  "category": "security | authentication | database | server | timeout | routing | validation | general",
   "severity": "low | medium | high"
 }}
+
+Consider both backend failures and possible security issues such as brute force attempts,
+SQL injection, suspicious privileged access, authentication abuse, or abnormal access patterns.
 
 Log:
 {log_text}

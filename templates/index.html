@@ -10,7 +10,7 @@
     <main class="container">
         <h1>AI Troubleshooting Agent</h1>
         <p class="subtitle">
-            Paste a backend log or error message and get structured troubleshooting insights.
+            Paste a backend or security-related log and get structured troubleshooting insights.
         </p>
 
         <section class="card">
@@ -40,8 +40,15 @@
                     <button type="button" onclick="loadExample('error500')">500 Server Error</button>
                     <button type="button" onclick="loadExample('auth401')">401 Unauthorized</button>
                     <button type="button" onclick="loadExample('dbError')">Database Error</button>
+                    <button type="button" onclick="loadExample('bruteforce')">Brute Force Attempt</button>
+                    <button type="button" onclick="loadExample('sqlInjection')">SQL Injection Attempt</button>
+                    <button type="button" onclick="loadExample('privilegeEscalation')">Suspicious Root Login</button>
                 </div>
             </div>
+
+            <p class="hint">
+                Supports backend troubleshooting and security log analysis.
+            </p>
 
             <p class="hint">
                 Available endpoints: <code>GET /health</code>,
